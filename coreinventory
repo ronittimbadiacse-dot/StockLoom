@@ -1,0 +1,917 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  LayoutDashboard, 
+  Package, 
+  ArrowDownCircle, 
+  ArrowUpCircle, 
+  RefreshCcw, 
+  History, 
+  Settings, 
+  LogOut, 
+  Plus, 
+  Search, 
+  AlertTriangle, 
+  Warehouse, 
+  Filter,
+  CheckCircle2,
+  XCircle,
+  ChevronRight,
+  User,
+  MoreVertical,
+  ClipboardList
+} from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  onSnapshot, 
+  query, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  serverTimestamp,
+  runTransaction
+} from 'firebase/firestore';
+import { 
+  getAuth, 
+  signInWithCustomToken, 
+  signInAnonymously, 
+  onAuthStateChanged, 
+  signOut,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword
+} from 'firebase/auth';
+
+// --- Firebase Configuration & Initialization ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-ims-app';
+
+// --- Constants & Types ---
+const OPERATION_TYPES = {
+  RECEIPT: 'receipt',
+  DELIVERY: 'delivery',
+  INTERNAL: 'internal',
+  ADJUSTMENT: 'adjustment'
+};
+
+const STATUS = {
+  DRAFT: 'Draft',
+  READY: 'Ready',
+  DONE: 'Done',
+  CANCELED: 'Canceled'
+};
+
+const CATEGORIES = ['Raw Material', 'Finished Goods', 'Packaging', 'Electronics', 'Others'];
+const UOMS = ['Units', 'kg', 'm', 'Liters', 'Boxes'];
+
+// --- Helper Functions ---
+const formatID = (prefix, num) => `${prefix}-${String(num).padStart(5, '0')}`;
+
+// --- Main App Component ---
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [products, setProducts] = useState([]);
+  const [operations, setOperations] = useState([]);
+  const [warehouses, setWarehouses] = useState([]);
+  const [moveHistory, setMoveHistory] = useState([]);
+  const [authMode, setAuthMode] = useState('login'); // 'login' or 'signup'
+  const [authError, setAuthError] = useState('');
+
+  // Authentication Logic
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          // For demo/dev purposes, fallback to anonymous or provide login UI
+          // We'll provide a real login UI, but this keeps the logic clean
+        }
+      } catch (err) {
+        console.error("Auth initialization error", err);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Data Sync Logic
+  useEffect(() => {
+    if (!user) return;
+
+    const productsRef = collection(db, 'artifacts', appId, 'public', 'data', 'products');
+    const opsRef = collection(db, 'artifacts', appId, 'public', 'data', 'operations');
+    const whRef = collection(db, 'artifacts', appId, 'public', 'data', 'warehouses');
+    const historyRef = collection(db, 'artifacts', appId, 'public', 'data', 'moveHistory');
+
+    const unsubProducts = onSnapshot(productsRef, (s) => setProducts(s.docs.map(d => ({ id: d.id, ...d.data() }))), err => console.error(err));
+    const unsubOps = onSnapshot(opsRef, (s) => setOperations(s.docs.map(d => ({ id: d.id, ...d.data() }))), err => console.error(err));
+    const unsubWh = onSnapshot(whRef, (s) => {
+      const data = s.docs.map(d => ({ id: d.id, ...d.data() }));
+      if (data.length === 0) {
+        // Initialize a default warehouse if none exist
+        addDoc(whRef, { name: 'Main Warehouse', code: 'WH/MAIN', location: 'Section A' });
+      }
+      setWarehouses(data);
+    }, err => console.error(err));
+    const unsubHistory = onSnapshot(historyRef, (s) => setMoveHistory(s.docs.map(d => ({ id: d.id, ...d.data() }))), err => console.error(err));
+
+    return () => {
+      unsubProducts();
+      unsubOps();
+      unsubWh();
+      unsubHistory();
+    };
+  }, [user]);
+
+  // Handle Login/Signup
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    const email = e.target.email.value;
+    const password = e.target.password.value;
+    try {
+      if (authMode === 'login') {
+        await signInWithEmailAndPassword(auth, email, password);
+      } else {
+        await createUserWithEmailAndPassword(auth, email, password);
+      }
+    } catch (err) {
+      setAuthError(err.message);
+    }
+  };
+
+  if (loading) return <div className="h-screen flex items-center justify-center bg-gray-50">Loading IMS...</div>;
+
+  if (!user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100 p-4">
+        <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8">
+          <div className="flex flex-col items-center mb-8">
+            <div className="bg-blue-600 p-3 rounded-xl mb-4">
+              <Package className="text-white w-8 h-8" />
+            </div>
+            <h1 className="text-2xl font-bold text-gray-900">Modular IMS</h1>
+            <p className="text-gray-500 text-sm">Centralized Stock Intelligence</p>
+          </div>
+
+          <form onSubmit={handleAuth} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Email Address</label>
+              <input name="email" type="email" required className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+              <input name="password" type="password" required className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+            </div>
+            {authError && <p className="text-red-500 text-xs mt-1">{authError}</p>}
+            <button type="submit" className="w-full bg-blue-600 text-white py-2 rounded-lg font-semibold hover:bg-blue-700 transition">
+              {authMode === 'login' ? 'Sign In' : 'Create Account'}
+            </button>
+          </form>
+
+          <div className="mt-6 text-center">
+            <button onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')} className="text-blue-600 text-sm hover:underline">
+              {authMode === 'login' ? "Don't have an account? Sign up" : "Already have an account? Log in"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-screen bg-gray-50 font-sans text-gray-900 overflow-hidden">
+      {/* Sidebar */}
+      <aside className="w-64 bg-white border-r flex flex-col shadow-sm z-20">
+        <div className="p-6 border-b flex items-center gap-3">
+          <div className="bg-blue-600 p-2 rounded-lg text-white">
+            <Package size={20} />
+          </div>
+          <span className="font-bold text-lg tracking-tight">StockMaster</span>
+        </div>
+
+        <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
+          <SidebarItem active={activeTab === 'dashboard'} icon={<LayoutDashboard size={20}/>} label="Dashboard" onClick={() => setActiveTab('dashboard')} />
+          <SidebarItem active={activeTab === 'products'} icon={<Package size={20}/>} label="Products" onClick={() => setActiveTab('products')} />
+          
+          <div className="pt-4 pb-2 text-xs font-semibold text-gray-400 uppercase tracking-wider px-3">Operations</div>
+          <SidebarItem active={activeTab === 'receipts'} icon={<ArrowDownCircle size={20}/>} label="Receipts" onClick={() => setActiveTab('receipts')} />
+          <SidebarItem active={activeTab === 'deliveries'} icon={<ArrowUpCircle size={20}/>} label="Delivery Orders" onClick={() => setActiveTab('deliveries')} />
+          <SidebarItem active={activeTab === 'transfers'} icon={<RefreshCcw size={20}/>} label="Internal Transfers" onClick={() => setActiveTab('transfers')} />
+          <SidebarItem active={activeTab === 'adjustments'} icon={<ClipboardList size={20}/>} label="Adjustments" onClick={() => setActiveTab('adjustments')} />
+          <SidebarItem active={activeTab === 'history'} icon={<History size={20}/>} label="Move History" onClick={() => setActiveTab('history')} />
+          
+          <div className="pt-4 pb-2 text-xs font-semibold text-gray-400 uppercase tracking-wider px-3">Config</div>
+          <SidebarItem active={activeTab === 'settings'} icon={<Settings size={20}/>} label="Settings" onClick={() => setActiveTab('settings')} />
+        </nav>
+
+        <div className="p-4 border-t space-y-1">
+          <div className="flex items-center gap-3 px-3 py-2 rounded-lg mb-2">
+            <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center font-bold">
+              {user.email?.[0].toUpperCase()}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate">{user.email}</p>
+              <p className="text-xs text-gray-500">Inventory Mgr</p>
+            </div>
+          </div>
+          <button onClick={() => signOut(auth)} className="w-full flex items-center gap-3 px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg transition text-sm">
+            <LogOut size={18} /> Logout
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className="flex-1 flex flex-col overflow-hidden">
+        <header className="h-16 bg-white border-b flex items-center justify-between px-8 z-10">
+          <h2 className="text-xl font-semibold text-gray-800 capitalize">
+            {activeTab.replace('-', ' ')}
+          </h2>
+          <div className="flex items-center gap-4">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+              <input type="text" placeholder="Search SKU or Product..." className="pl-10 pr-4 py-2 bg-gray-100 border-none rounded-full text-sm focus:ring-2 focus:ring-blue-500 w-64" />
+            </div>
+          </div>
+        </header>
+
+        <section className="flex-1 overflow-y-auto p-8">
+          {activeTab === 'dashboard' && <Dashboard products={products} operations={operations} />}
+          {activeTab === 'products' && <ProductsView products={products} categories={CATEGORIES} uoms={UOMS} />}
+          {activeTab === 'receipts' && <OperationsView type={OPERATION_TYPES.RECEIPT} operations={operations} products={products} warehouses={warehouses} />}
+          {activeTab === 'deliveries' && <OperationsView type={OPERATION_TYPES.DELIVERY} operations={operations} products={products} warehouses={warehouses} />}
+          {activeTab === 'transfers' && <OperationsView type={OPERATION_TYPES.INTERNAL} operations={operations} products={products} warehouses={warehouses} />}
+          {activeTab === 'adjustments' && <OperationsView type={OPERATION_TYPES.ADJUSTMENT} operations={operations} products={products} warehouses={warehouses} />}
+          {activeTab === 'history' && <HistoryView history={moveHistory} products={products} />}
+          {activeTab === 'settings' && <SettingsView warehouses={warehouses} />}
+        </section>
+      </main>
+    </div>
+  );
+}
+
+function SidebarItem({ icon, label, active, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all text-sm font-medium ${
+        active ? 'bg-blue-50 text-blue-600 shadow-sm' : 'text-gray-600 hover:bg-gray-100'
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
+// --- Dashboard Component ---
+function Dashboard({ products, operations }) {
+  const stats = useMemo(() => {
+    const totalStock = products.reduce((acc, p) => acc + (Number(p.currentStock) || 0), 0);
+    const lowStockItems = products.filter(p => Number(p.currentStock) <= (Number(p.reorderPoint) || 0));
+    const pendingReceipts = operations.filter(o => o.type === OPERATION_TYPES.RECEIPT && o.status !== STATUS.DONE).length;
+    const pendingDeliveries = operations.filter(o => o.type === OPERATION_TYPES.DELIVERY && o.status !== STATUS.DONE).length;
+    
+    return { totalStock, lowStock: lowStockItems.length, pendingReceipts, pendingDeliveries };
+  }, [products, operations]);
+
+  return (
+    <div className="space-y-8">
+      {/* KPI Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <KpiCard label="Total Stock Units" value={stats.totalStock} icon={<Package className="text-blue-600" />} color="blue" />
+        <KpiCard label="Low/Out of Stock" value={stats.lowStock} icon={<AlertTriangle className="text-amber-600" />} color="amber" subtext="Requires attention" />
+        <KpiCard label="Pending Receipts" value={stats.pendingReceipts} icon={<ArrowDownCircle className="text-green-600" />} color="green" />
+        <KpiCard label="Pending Deliveries" value={stats.pendingDeliveries} icon={<ArrowUpCircle className="text-purple-600" />} color="purple" />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* Low Stock Alerts */}
+        <div className="bg-white p-6 rounded-2xl shadow-sm border">
+          <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+            <AlertTriangle className="text-amber-500" size={20} />
+            Stock Alerts
+          </h3>
+          <div className="space-y-3">
+            {products.filter(p => Number(p.currentStock) <= (Number(p.reorderPoint) || 0)).slice(0, 5).map(p => (
+              <div key={p.id} className="flex items-center justify-between p-3 bg-amber-50 rounded-xl border border-amber-100">
+                <div>
+                  <p className="font-semibold text-amber-900">{p.name}</p>
+                  <p className="text-xs text-amber-700">SKU: {p.sku}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-lg font-bold text-amber-900">{p.currentStock}</p>
+                  <p className="text-[10px] text-amber-600 uppercase font-bold tracking-wider">Min: {p.reorderPoint}</p>
+                </div>
+              </div>
+            ))}
+            {products.filter(p => p.currentStock <= p.reorderPoint).length === 0 && (
+              <p className="text-gray-500 text-sm py-8 text-center">All items are sufficiently stocked.</p>
+            )}
+          </div>
+        </div>
+
+        {/* Recent Operations Snapshot */}
+        <div className="bg-white p-6 rounded-2xl shadow-sm border">
+          <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+            <RefreshCcw className="text-blue-500" size={20} />
+            Recent Activity
+          </h3>
+          <div className="space-y-4">
+            {operations.sort((a, b) => b.createdAt?.seconds - a.createdAt?.seconds).slice(0, 5).map(op => (
+              <div key={op.id} className="flex items-center gap-4 p-2 hover:bg-gray-50 rounded-lg transition cursor-pointer">
+                <div className={`p-2 rounded-lg ${op.type === 'receipt' ? 'bg-green-100 text-green-700' : op.type === 'delivery' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
+                  {op.type === 'receipt' ? <ArrowDownCircle size={18} /> : op.type === 'delivery' ? <ArrowUpCircle size={18} /> : <RefreshCcw size={18} />}
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm font-semibold">{op.reference || `OP-${op.id.slice(0,4)}`}</p>
+                  <p className="text-xs text-gray-500 capitalize">{op.type} • {op.status}</p>
+                </div>
+                <div className="text-xs text-gray-400">
+                  {op.createdAt?.seconds ? new Date(op.createdAt.seconds * 1000).toLocaleDateString() : 'Just now'}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KpiCard({ label, value, icon, color, subtext }) {
+  const colors = {
+    blue: 'bg-blue-50 border-blue-100',
+    amber: 'bg-amber-50 border-amber-100',
+    green: 'bg-green-50 border-green-100',
+    purple: 'bg-purple-50 border-purple-100',
+  };
+  return (
+    <div className={`p-6 rounded-2xl border shadow-sm flex flex-col justify-between ${colors[color]}`}>
+      <div className="flex justify-between items-start">
+        <div className="p-2 bg-white rounded-lg shadow-sm">{icon}</div>
+        <div className="text-2xl font-black text-gray-800">{value}</div>
+      </div>
+      <div className="mt-4">
+        <p className="text-xs font-bold text-gray-500 uppercase tracking-widest">{label}</p>
+        {subtext && <p className="text-[10px] text-gray-400 mt-1">{subtext}</p>}
+      </div>
+    </div>
+  );
+}
+
+// --- Products Management View ---
+function ProductsView({ products, categories, uoms }) {
+  const [showModal, setShowModal] = useState(false);
+  const [editingProduct, setEditingProduct] = useState(null);
+
+  const saveProduct = async (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const data = {
+      name: formData.get('name'),
+      sku: formData.get('sku'),
+      category: formData.get('category'),
+      uom: formData.get('uom'),
+      reorderPoint: Number(formData.get('reorderPoint')),
+      currentStock: editingProduct ? editingProduct.currentStock : Number(formData.get('initialStock') || 0),
+      updatedAt: serverTimestamp()
+    };
+
+    try {
+      if (editingProduct) {
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'products', editingProduct.id), data);
+      } else {
+        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'products'), { ...data, createdAt: serverTimestamp() });
+      }
+      setShowModal(false);
+      setEditingProduct(null);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <div className="flex gap-2">
+          <button className="flex items-center gap-2 px-4 py-2 bg-white border rounded-lg text-sm font-medium hover:bg-gray-50 shadow-sm">
+            <Filter size={16} /> Filter
+          </button>
+        </div>
+        <button 
+          onClick={() => setShowModal(true)}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold hover:bg-blue-700 shadow-md transition"
+        >
+          <Plus size={18} /> New Product
+        </button>
+      </div>
+
+      <div className="bg-white rounded-2xl border shadow-sm overflow-hidden">
+        <table className="w-full text-left">
+          <thead className="bg-gray-50 border-b">
+            <tr>
+              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Product</th>
+              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">SKU</th>
+              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Category</th>
+              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">On Hand</th>
+              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Alert Level</th>
+              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {products.map(p => (
+              <tr key={p.id} className="hover:bg-gray-50 transition">
+                <td className="px-6 py-4 font-semibold">{p.name}</td>
+                <td className="px-6 py-4 text-sm text-gray-500">{p.sku}</td>
+                <td className="px-6 py-4 text-sm">
+                  <span className="px-2 py-1 bg-gray-100 rounded text-xs text-gray-600">{p.category}</span>
+                </td>
+                <td className="px-6 py-4">
+                  <span className={`font-bold ${p.currentStock <= p.reorderPoint ? 'text-red-600' : 'text-green-600'}`}>
+                    {p.currentStock} {p.uom}
+                  </span>
+                </td>
+                <td className="px-6 py-4 text-sm text-gray-500">{p.reorderPoint}</td>
+                <td className="px-6 py-4 text-right">
+                  <button 
+                    onClick={() => { setEditingProduct(p); setShowModal(true); }}
+                    className="text-gray-400 hover:text-blue-600 transition"
+                  >
+                    <MoreVertical size={18} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {showModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl animate-in fade-in zoom-in duration-200">
+            <div className="p-6 border-b flex justify-between items-center">
+              <h3 className="text-xl font-bold">{editingProduct ? 'Edit Product' : 'Create New Product'}</h3>
+              <button onClick={() => { setShowModal(false); setEditingProduct(null); }} className="text-gray-400 hover:text-gray-600"><XCircle /></button>
+            </div>
+            <form onSubmit={saveProduct} className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-2">
+                  <label className="block text-sm font-bold text-gray-700 mb-1">Product Name</label>
+                  <input name="name" defaultValue={editingProduct?.name} required className="w-full px-4 py-2 border rounded-xl" />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">SKU / Code</label>
+                  <input name="sku" defaultValue={editingProduct?.sku} required className="w-full px-4 py-2 border rounded-xl" />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">Category</label>
+                  <select name="category" defaultValue={editingProduct?.category} className="w-full px-4 py-2 border rounded-xl">
+                    {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">UoM</label>
+                  <select name="uom" defaultValue={editingProduct?.uom} className="w-full px-4 py-2 border rounded-xl">
+                    {uoms.map(u => <option key={u} value={u}>{u}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">Reorder Point</label>
+                  <input name="reorderPoint" type="number" defaultValue={editingProduct?.reorderPoint || 0} className="w-full px-4 py-2 border rounded-xl" />
+                </div>
+                {!editingProduct && (
+                  <div className="col-span-2">
+                    <label className="block text-sm font-bold text-gray-700 mb-1">Initial Stock (Optional)</label>
+                    <input name="initialStock" type="number" defaultValue={0} className="w-full px-4 py-2 border rounded-xl" />
+                  </div>
+                )}
+              </div>
+              <div className="pt-4">
+                <button type="submit" className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition">
+                  {editingProduct ? 'Update Product' : 'Save Product'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- Operations View (Receipts, Deliveries, Transfers, Adjustments) ---
+function OperationsView({ type, operations, products, warehouses }) {
+  const [showForm, setShowForm] = useState(false);
+  const [selectedOp, setSelectedOp] = useState(null);
+
+  const filteredOps = useMemo(() => operations.filter(o => o.type === type), [operations, type]);
+
+  const validateOperation = async (op) => {
+    if (op.status === STATUS.DONE) return;
+
+    try {
+      await runTransaction(db, async (transaction) => {
+        // 1. Process each item in the operation
+        for (const item of op.items) {
+          const productRef = doc(db, 'artifacts', appId, 'public', 'data', 'products', item.productId);
+          const pDoc = await transaction.get(productRef);
+          if (!pDoc.exists()) continue;
+
+          const currentStock = Number(pDoc.data().currentStock);
+          const itemQty = Number(item.qty);
+          let newStock = currentStock;
+
+          if (type === OPERATION_TYPES.RECEIPT) newStock += itemQty;
+          if (type === OPERATION_TYPES.DELIVERY) newStock -= itemQty;
+          if (type === OPERATION_TYPES.ADJUSTMENT) newStock = itemQty; // Adjust directly to counted value
+          // Note: Internal transfers would require location-based stock if implemented, 
+          // but for this modular logic, we treat it as an internal move affecting global stock only if cross-entity.
+          // For simplicity, receipts/deliveries affect global count.
+
+          transaction.update(productRef, { currentStock: newStock });
+
+          // 2. Log to history
+          const historyRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'moveHistory'));
+          transaction.set(historyRef, {
+            productId: item.productId,
+            operationType: type,
+            qty: itemQty,
+            prevStock: currentStock,
+            newStock: newStock,
+            ref: op.reference || op.id,
+            timestamp: serverTimestamp()
+          });
+        }
+
+        // 3. Mark operation as DONE
+        const opRef = doc(db, 'artifacts', appId, 'public', 'data', 'operations', op.id);
+        transaction.update(opRef, { status: STATUS.DONE, validatedAt: serverTimestamp() });
+      });
+      setSelectedOp(null);
+    } catch (err) {
+      console.error("Validation failed:", err);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <h3 className="text-lg font-semibold text-gray-500">Manage {type}s</h3>
+        <button 
+          onClick={() => setShowForm(true)}
+          className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-blue-700 shadow-sm"
+        >
+          <Plus size={18} /> Create New {type.charAt(0).toUpperCase() + type.slice(1)}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {filteredOps.map(op => (
+          <div key={op.id} className="bg-white rounded-2xl border shadow-sm p-5 hover:border-blue-200 transition">
+            <div className="flex justify-between items-start mb-4">
+              <div>
+                <span className={`px-2 py-1 rounded text-[10px] font-black uppercase tracking-widest ${
+                  op.status === STATUS.DONE ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'
+                }`}>
+                  {op.status}
+                </span>
+                <p className="font-bold text-gray-900 mt-2">{op.reference || `REF-${op.id.slice(0,5)}`}</p>
+                <p className="text-xs text-gray-500">Created: {op.createdAt?.seconds ? new Date(op.createdAt.seconds * 1000).toLocaleDateString() : 'N/A'}</p>
+              </div>
+              <div className="flex gap-1">
+                {op.status !== STATUS.DONE && (
+                  <button onClick={() => validateOperation(op)} className="p-2 text-green-600 hover:bg-green-50 rounded-lg">
+                    <CheckCircle2 size={20} />
+                  </button>
+                )}
+                <button onClick={() => setSelectedOp(op)} className="p-2 text-gray-400 hover:bg-gray-50 rounded-lg">
+                  <ChevronRight size={20} />
+                </button>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-sm text-gray-600">
+                <Warehouse size={14} />
+                <span>{op.warehouseId ? warehouses.find(w => w.id === op.warehouseId)?.name : 'N/A'}</span>
+              </div>
+              <div className="text-xs font-medium text-gray-400">
+                {op.items?.length || 0} Products Included
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Operation Form Modal */}
+      {showForm && (
+        <OperationForm 
+          type={type} 
+          products={products} 
+          warehouses={warehouses} 
+          onClose={() => setShowForm(false)} 
+          appId={appId} 
+        />
+      )}
+
+      {/* Detail View Modal */}
+      {selectedOp && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl">
+            <div className="p-6 border-b flex justify-between items-center">
+              <div>
+                <h3 className="text-xl font-bold">Operation Details</h3>
+                <p className="text-sm text-gray-500">{selectedOp.reference}</p>
+              </div>
+              <button onClick={() => setSelectedOp(null)} className="text-gray-400 hover:text-gray-600"><XCircle /></button>
+            </div>
+            <div className="p-6 space-y-6">
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <p className="text-gray-400 font-bold uppercase text-[10px]">Source/Dest</p>
+                  <p className="font-medium">{selectedOp.source || 'Warehouse'}</p>
+                </div>
+                <div>
+                  <p className="text-gray-400 font-bold uppercase text-[10px]">Status</p>
+                  <p className={`font-bold ${selectedOp.status === STATUS.DONE ? 'text-green-600' : 'text-blue-600'}`}>{selectedOp.status}</p>
+                </div>
+              </div>
+
+              <div className="border rounded-xl overflow-hidden">
+                <table className="w-full text-left">
+                  <thead className="bg-gray-50 text-[10px] font-bold text-gray-500 uppercase">
+                    <tr>
+                      <th className="px-4 py-2">Product</th>
+                      <th className="px-4 py-2">Quantity</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y text-sm">
+                    {selectedOp.items.map((item, idx) => (
+                      <tr key={idx}>
+                        <td className="px-4 py-3">{products.find(p => p.id === item.productId)?.name || 'Unknown'}</td>
+                        <td className="px-4 py-3 font-bold">{item.qty}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            {selectedOp.status !== STATUS.DONE && (
+              <div className="p-6 bg-gray-50 rounded-b-2xl border-t">
+                <button 
+                  onClick={() => validateOperation(selectedOp)}
+                  className="w-full bg-green-600 text-white py-3 rounded-xl font-bold hover:bg-green-700 transition flex items-center justify-center gap-2 shadow-lg"
+                >
+                  <CheckCircle2 size={20} /> Validate & Update Stock
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- Specific Operation Form ---
+function OperationForm({ type, products, warehouses, onClose, appId }) {
+  const [items, setItems] = useState([{ productId: '', qty: 0 }]);
+  const [warehouseId, setWarehouseId] = useState(warehouses[0]?.id || '');
+  const [loading, setLoading] = useState(false);
+
+  const addItem = () => setItems([...items, { productId: '', qty: 0 }]);
+  const removeItem = (idx) => setItems(items.filter((_, i) => i !== idx));
+  const updateItem = (idx, field, value) => {
+    const newItems = [...items];
+    newItems[idx][field] = value;
+    setItems(newItems);
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    const formData = new FormData(e.target);
+    const opData = {
+      type,
+      warehouseId,
+      source: formData.get('source'),
+      reference: formData.get('reference') || `${type.toUpperCase()}-${Date.now().toString().slice(-6)}`,
+      items,
+      status: STATUS.DRAFT,
+      createdAt: serverTimestamp()
+    };
+
+    try {
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'operations'), opData);
+      onClose();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl animate-in slide-in-from-bottom-4">
+        <div className="p-6 border-b flex justify-between items-center">
+          <h3 className="text-xl font-bold capitalize">New {type}</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><XCircle /></button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-6 space-y-6">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-1">Warehouse</label>
+              <select 
+                value={warehouseId} 
+                onChange={(e) => setWarehouseId(e.target.value)}
+                className="w-full px-4 py-2 border rounded-xl"
+              >
+                {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-1">
+                {type === OPERATION_TYPES.RECEIPT ? 'Supplier' : type === OPERATION_TYPES.DELIVERY ? 'Customer' : 'Reference'}
+              </label>
+              <input name="source" placeholder="Name or Location" className="w-full px-4 py-2 border rounded-xl" />
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <label className="text-sm font-bold text-gray-700">Products & Quantities</label>
+              <button type="button" onClick={addItem} className="text-blue-600 text-xs font-bold hover:underline">+ Add Product</button>
+            </div>
+            <div className="max-h-64 overflow-y-auto space-y-3 pr-2">
+              {items.map((item, idx) => (
+                <div key={idx} className="flex gap-2 items-center">
+                  <select 
+                    value={item.productId} 
+                    onChange={(e) => updateItem(idx, 'productId', e.target.value)}
+                    required
+                    className="flex-1 px-4 py-2 border rounded-xl"
+                  >
+                    <option value="">Select Product...</option>
+                    {products.map(p => <option key={p.id} value={p.id}>{p.name} (SKU: {p.sku})</option>)}
+                  </select>
+                  <input 
+                    type="number" 
+                    placeholder="Qty" 
+                    value={item.qty}
+                    onChange={(e) => updateItem(idx, 'qty', e.target.value)}
+                    className="w-24 px-4 py-2 border rounded-xl"
+                    required
+                  />
+                  <button type="button" onClick={() => removeItem(idx)} className="text-red-500 p-2"><XCircle size={18} /></button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="pt-4 border-t">
+            <button 
+              disabled={loading}
+              type="submit" 
+              className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition shadow-lg disabled:opacity-50"
+            >
+              {loading ? 'Creating...' : `Create ${type}`}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// --- History View ---
+function HistoryView({ history, products }) {
+  const sortedHistory = useMemo(() => {
+    return [...history].sort((a, b) => b.timestamp?.seconds - a.timestamp?.seconds);
+  }, [history]);
+
+  return (
+    <div className="bg-white rounded-2xl border shadow-sm overflow-hidden">
+      <table className="w-full text-left">
+        <thead className="bg-gray-50 border-b">
+          <tr>
+            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Product</th>
+            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Type</th>
+            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Change</th>
+            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">New Balance</th>
+            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Reference</th>
+            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Date</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y text-sm">
+          {sortedHistory.map(h => (
+            <tr key={h.id} className="hover:bg-gray-50">
+              <td className="px-6 py-4 font-medium">{products.find(p => p.id === h.productId)?.name || 'Deleted Product'}</td>
+              <td className="px-6 py-4">
+                <span className={`capitalize font-bold px-2 py-0.5 rounded text-[10px] ${
+                  h.operationType === 'receipt' ? 'bg-green-100 text-green-700' : 
+                  h.operationType === 'delivery' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'
+                }`}>
+                  {h.operationType}
+                </span>
+              </td>
+              <td className={`px-6 py-4 font-bold ${h.operationType === 'receipt' ? 'text-green-600' : 'text-red-600'}`}>
+                {h.operationType === 'receipt' ? `+${h.qty}` : `-${h.qty}`}
+              </td>
+              <td className="px-6 py-4 font-black text-gray-700">{h.newStock}</td>
+              <td className="px-6 py-4 text-gray-500">{h.ref}</td>
+              <td className="px-6 py-4 text-gray-400">
+                {h.timestamp?.seconds ? new Date(h.timestamp.seconds * 1000).toLocaleString() : 'Just now'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {history.length === 0 && (
+        <div className="p-12 text-center text-gray-500">No transactions recorded yet.</div>
+      )}
+    </div>
+  );
+}
+
+// --- Settings View ---
+function SettingsView({ warehouses }) {
+  const [showWhModal, setShowWhModal] = useState(false);
+
+  const addWarehouse = async (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'warehouses'), {
+      name: formData.get('name'),
+      code: formData.get('code'),
+      location: formData.get('location'),
+      createdAt: serverTimestamp()
+    });
+    setShowWhModal(false);
+  };
+
+  return (
+    <div className="max-w-4xl space-y-8">
+      <div className="bg-white p-8 rounded-2xl border shadow-sm">
+        <div className="flex justify-between items-center mb-6">
+          <h3 className="text-xl font-bold flex items-center gap-2">
+            <Warehouse className="text-blue-600" /> Warehouses
+          </h3>
+          <button onClick={() => setShowWhModal(true)} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold">
+            Add Warehouse
+          </button>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {warehouses.map(w => (
+            <div key={w.id} className="p-4 border rounded-xl flex items-center justify-between hover:bg-gray-50 transition">
+              <div>
+                <p className="font-bold text-gray-900">{w.name}</p>
+                <p className="text-xs text-gray-500">{w.code} • {w.location}</p>
+              </div>
+              <Settings size={18} className="text-gray-300" />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {showWhModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
+            <div className="p-6 border-b flex justify-between items-center">
+              <h3 className="text-xl font-bold">New Warehouse</h3>
+              <button onClick={() => setShowWhModal(false)} className="text-gray-400 hover:text-gray-600"><XCircle /></button>
+            </div>
+            <form onSubmit={addWarehouse} className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Warehouse Name</label>
+                <input name="name" required className="w-full px-4 py-2 border rounded-xl" />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Short Code (e.g., WH/NYC)</label>
+                <input name="code" required className="w-full px-4 py-2 border rounded-xl" />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Physical Location</label>
+                <input name="location" required className="w-full px-4 py-2 border rounded-xl" />
+              </div>
+              <button type="submit" className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold mt-4">Save Warehouse</button>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
